@@ -25,6 +25,15 @@ config main 'main'
 	#list exclude_traffic_ip ''
 	option yacd '0'
 	option socks5 '0'
+	# Aggregator for multiple outbounds built from subscription or manual entries
+	# 0: use selector, 1: use urltest
+	option use_urltest '0'
+	# urltest settings (only used if use_urltest=1)
+	#option urltest_url 'https://cp.cloudflare.com/generate_204'
+	#option urltest_interval '180'
+	#option urltest_tolerance '50'
+	#option urltest_idle_timeout '0'
+	#option urltest_interrupt_exist_connections '0'
 	option exclude_ntp '0'
 	option quic_disable '0'
 	option dont_touch_dhcp '0'
