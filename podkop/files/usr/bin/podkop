@@ -1546,6 +1546,7 @@ sing_box_add_outbound_vless() {
       }] |
       .outbounds |= map(
         if .tag == $tag then
+<<<<<<< HEAD
           (if $flow != "" and $flow != "none" then . + {"flow": $flow} else . end) |
           (if $type == "ws" then
             . + {"transport": {"type": "ws", "path": ($path // "/")}} |
@@ -1635,6 +1636,7 @@ process_subscription_section() {
                 local server=$(echo "$line" | cut -d'@' -f2 | cut -d':' -f1)
                 local port=$(echo "$line" | sed -n 's|.*:\([0-9]\+\).*|\1|p')
                 local enc=$(echo "$line" | cut -d'/' -f3 | cut -d'@' -f1)
+<<<<<<< HEAD
                 
                 # Validate required fields
                 if [ -z "$server" ] || [ -z "$port" ] || [ -z "$enc" ]; then

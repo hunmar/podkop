@@ -1,6 +1,6 @@
 #!/bin/sh
 
-REPO="https://api.github.com/repos/itdoginfo/podkop/releases/latest"
+REPO="https://api.github.com/repos/hunmar/podkop/releases/latest"
 DOWNLOAD_DIR="/tmp/podkop"
 COUNT=3
 
@@ -26,7 +26,7 @@ main() {
     fi
     
     if command -v curl &> /dev/null; then
-        check_response=$(curl -s "https://api.github.com/repos/itdoginfo/podkop/releases/latest")
+        check_response=$(curl -s "https://api.github.com/repos/hunmar/podkop/releases/latest")
 
         if echo "$check_response" | grep -q 'API rate limit '; then
             msg "You've reached rate limit from GitHub. Repeat in five minutes."
