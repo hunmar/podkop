@@ -31,6 +31,7 @@ function createConfigSection(section, map, network) {
 
     o = s.taboption('basic', form.ListValue, 'proxy_config_type', _('Configuration Type'), _('Select how to configure the proxy'));
     o.value('url', _('Connection URL'));
+    o.value('subscription', _('Subscription URL'));
     o.value('outbound', _('Outbound Config'));
     o.default = 'url';
     o.depends('mode', 'proxy');
@@ -83,6 +84,17 @@ function createConfigSection(section, map, network) {
         }
 
         return container;
+    };
+
+    // Subscription URL (Xray/V2Ray style)
+    o = s.taboption('basic', form.Value, 'subscription_url', _('Subscription URL'), _('HTTP(S) subscription exporting VLESS/SS URIs; base64 or plain text'));
+    o.depends('proxy_config_type', 'subscription');
+    o.rmempty = false;
+    o.ucisection = s.section;
+    o.placeholder = 'https://example.com/sub';
+    o.validate = function (section_id, value) {
+        if (!value || value.length === 0) return _('Subscription URL cannot be empty');
+        return validateUrl(value);
     };
 
     o.validate = function (section_id, value) {

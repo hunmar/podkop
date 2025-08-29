@@ -651,6 +651,9 @@ list_update() {
 
     echolog "📥 Downloading and processing lists..."
 
+    # Refresh proxy subscriptions (if configured)
+    config_foreach refresh_subscription
+
     config_foreach import_community_subnet_lists
     config_foreach import_domains_from_remote_domain_lists
     config_foreach import_subnets_from_remote_subnet_lists
@@ -1059,6 +1062,13 @@ sing_box_outdound() {
                 log "Missing outbound JSON configuration"
                 return
             fi
+        elif [ "$proxy_config_type" = "subscription" ]; then
+            config_get subscription_url $section "subscription_url"
+            if [ -z "$subscription_url" ]; then
+                log "[critical] Subscription URL is not set. Exit"
+                exit 1
+            fi
+            process_subscription_section "$section" "$subscription_url"
         else
             config_get proxy_string $section "proxy_string"
 
@@ -1366,6 +1376,232 @@ sing_box_config_vless() {
     else
         log "[critical] Error: VLESS invalid JSON config generated"
         exit 1
+    fi
+}
+
+# Helpers for subscription-driven outbounds
+sing_box_add_outbound_shadowsocks() {
+    local tag="$1"
+    local server="$2"
+    local port="$3"
+    local method="$4"
+    local password="$5"
+
+    jq \
+    --arg tag "$tag" \
+    --arg server "$server" \
+    --argjson port "$port" \
+    --arg method "$method" \
+    --arg password "$password" \
+    '. |
+      .outbounds += [{
+        "tag": $tag,
+        "type": "shadowsocks",
+        "server": $server,
+        "server_port": ($port | tonumber),
+        "method": $method,
+        "password": $password
+      }]' "$SING_BOX_CONFIG" | build_sing_box_config
+}
+
+sing_box_add_outbound_vless() {
+    local tag="$1"
+    local server="$2"
+    local port="$3"
+    local uuid="$4"
+    local type="$5"
+    local security="$6"
+    local sni="$7"
+    local fp="$8"
+    local flow="$9"
+    local path="${10}"
+    local host="${11}"
+    local pbk="${12}"
+    local sid="${13}"
+    local insecure="${14}"
+
+    jq \
+    --arg tag "$tag" \
+    --arg server "$server" \
+    --argjson port "$port" \
+    --arg uuid "$uuid" \
+    --arg type "$type" \
+    --arg security "$security" \
+    --arg sni "$sni" \
+    --arg fp "$fp" \
+    --arg flow "$flow" \
+    --arg path "$path" \
+    --arg host "$host" \
+    --arg pbk "$pbk" \
+    --arg sid "$sid" \
+    --arg insecure "$insecure" \
+    '. |
+      .outbounds += [{
+        "tag": $tag,
+        "type": "vless",
+        "server": $server,
+        "server_port": ($port | tonumber),
+        "uuid": $uuid
+      }] |
+      .outbounds |= map(
+        if .tag == $tag then
+          (if $flow != "" then . + {"flow": $flow} else . end) |
+          (if $type == "ws" then
+            . + {"transport": {"type": "ws", "path": $path}} |
+            (if $host != "" then (.transport.headers = {"Host": $host}) else . end)
+           elif $type == "grpc" then
+            . + {"transport": {"type": "grpc"}}
+           else . end) |
+          (if $security == "tls" or $security == "reality" then
+             . + {"tls": {"enabled": true, "server_name": $sni, "utls": {"enabled": true, "fingerprint": $fp}, "insecure": ($insecure == "1")}} |
+             (if $security == "reality" then .tls += {"reality": {"enabled": true, "public_key": $pbk, "short_id": $sid}} else . end)
+           else . end)
+        else . end)
+    ' "$SING_BOX_CONFIG" | build_sing_box_config
+}
+
+sing_box_selector_add_option() {
+    local selector_tag="$1"
+    local option_tag="$2"
+
+    jq \
+    --arg selector_tag "$selector_tag" \
+    --arg option_tag "$option_tag" \
+    '.outbounds |= (
+        if (map(select(.tag == $selector_tag)) | length) == 0 then
+            . + [{"tag": $selector_tag, "type": "selector", "outbounds": [$option_tag]}]
+        else
+            map(
+                if .tag == $selector_tag then
+                    .outbounds = ((.outbounds // []) + [$option_tag] | unique)
+                else . end
+            )
+        end
+    )' "$SING_BOX_CONFIG" | build_sing_box_config
+}
+
+process_subscription_section() {
+    local section="$1"
+    local url="$2"
+
+    log "Fetching subscription for $section"
+
+    local content
+    content=$(download_to_stream "$url")
+
+    if [ -z "$content" ]; then
+        log "[critical] Empty subscription content"
+        exit 1
+    fi
+
+    local decoded
+    decoded=$(echo "$content" | tr -d '\n\r' | base64 -d 2>/dev/null)
+    if [ -z "$decoded" ]; then
+        decoded="$content"
+    fi
+
+    local uris
+    uris=$(echo "$decoded" | tr '\r' '\n' | tr -s '\n' | sed 's/^\s*//;s/\s*$//' | grep -E '^(vless|ss|trojan)://')
+
+    if [ -z "$uris" ]; then
+        log "[critical] No valid URIs found in subscription"
+        exit 1
+    fi
+
+    local idx=1
+    local count=0
+
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        local scheme=$(echo "$line" | cut -d':' -f1)
+        local tag="${section}-${idx}"
+
+        case "$scheme" in
+            ss)
+                local server=$(echo "$line" | cut -d'@' -f2 | cut -d':' -f1)
+                local port=$(echo "$line" | sed -n 's|.*:\([0-9]\+\).*|\1|p')
+                local enc=$(echo "$line" | cut -d'/' -f3 | cut -d'@' -f1)
+                local decoded_enc=$(echo "$enc" | base64 -d 2>/dev/null)
+                local method
+                local password
+                if echo "$decoded_enc" | grep -q ':'; then
+                    method=$(echo "$decoded_enc" | cut -d':' -f1)
+                    password=$(echo "$decoded_enc" | cut -d':' -f2-)
+                else
+                    method=$(echo "$enc" | cut -d':' -f1)
+                    password=$(echo "$enc" | cut -d':' -f2-)
+                fi
+                sing_box_add_outbound_shadowsocks "$tag" "$server" "$port" "$method" "$password"
+                ;;
+            vless)
+                local uuid=$(echo "$line" | cut -d'/' -f3 | cut -d'@' -f1)
+                local server=$(echo "$line" | cut -d'@' -f2 | cut -d':' -f1)
+                local port=$(echo "$line" | cut -d'@' -f2 | sed 's/.*:\([0-9]\+\).*/\1/')
+                local qs=$(echo "$line" | sed -n 's/^[^?]*?\(.*\)$/\1/p')
+                local getp=''; getp() { echo "$qs" | tr '&' '\n' | grep -E "^$1=" | head -n1 | cut -d'=' -f2 | sed 's/%2F/\//g; s/%2C/,/g; s/%3D/=/g; s/%2B/+/g; s/%20/ /g; s/%3B/;/g'; }
+                local type=$(getp type)
+                local security=$(getp security)
+                local sni=$(getp sni)
+                local fp=$(getp fp)
+                local flow=$(getp flow)
+                local path=$(getp path)
+                local host=$(getp host)
+                local pbk=$(getp pbk)
+                local sid=$(getp sid)
+                local insecure=$(getp allowInsecure)
+                sing_box_add_outbound_vless "$tag" "$server" "$port" "$uuid" "$type" "$security" "$sni" "$fp" "$flow" "$path" "$host" "$pbk" "$sid" "$insecure"
+                ;;
+            trojan)
+                local pass=$(echo "$line" | cut -d'/' -f3 | cut -d'@' -f1)
+                local server=$(echo "$line" | cut -d'@' -f2 | cut -d':' -f1)
+                local port=$(echo "$line" | sed -n 's|.*:\([0-9]\+\).*|\1|p')
+                local sni=$(echo "$line" | sed -n 's/.*[?&]sni=\([^&#]*\).*/\1/p')
+                jq \
+                --arg tag "$tag" \
+                --arg server "$server" \
+                --argjson port "$port" \
+                --arg password "$pass" \
+                --arg sni "$sni" \
+                '.outbounds += [{
+                    "tag": $tag,
+                    "type": "trojan",
+                    "server": $server,
+                    "server_port": ($port | tonumber),
+                    "password": $password,
+                    "tls": {"enabled": true, "server_name": $sni}
+                }]' "$SING_BOX_CONFIG" | build_sing_box_config
+                ;;
+            *)
+                ;;
+        esac
+
+        sing_box_selector_add_option "$section" "$tag"
+        count=$((count+1))
+        idx=$((idx+1))
+    done <<EOF
+$uris
+EOF
+
+    if [ "$count" -le 0 ]; then
+        log "[critical] No outbounds produced from subscription"
+        exit 1
+    fi
+}
+
+refresh_subscription() {
+    local section="$1"
+    config_get mode "$section" "mode"
+    config_get proxy_config_type "$section" "proxy_config_type"
+    if [ "$mode" = "proxy" ] && [ "$proxy_config_type" = "subscription" ]; then
+        config_get subscription_url $section "subscription_url"
+        if [ -n "$subscription_url" ]; then
+            local prefix="$section-"
+            jq --arg section "$section" --arg prefix "$prefix" '
+                .outbounds |= map(select((.tag | startswith($prefix)) | not)) |
+                .outbounds |= map(select(.tag != $section))
+            ' "$SING_BOX_CONFIG" | build_sing_box_config
+            process_subscription_section "$section" "$subscription_url"
+        fi
     fi
 }
 
@@ -2983,6 +3219,9 @@ case "$1" in
         ;;
     list_update)
         list_update
+        ;;
+    refresh_subscription)
+        refresh_subscription "$2"
         ;;
     check_proxy)
         check_proxy
