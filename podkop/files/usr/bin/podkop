@@ -59,7 +59,22 @@ echolog() {
 }
 
 build_sing_box_config() {
-    cat > /tmp/sing-box-config-tmp.json && mv /tmp/sing-box-config-tmp.json "$SING_BOX_CONFIG"
+    # Validate JSON before writing
+    if ! jq . > /tmp/sing-box-config-tmp.json 2>/tmp/jq-error.log; then
+        local jq_error=$(cat /tmp/jq-error.log 2>/dev/null)
+        log "[critical] Invalid JSON generated: $jq_error"
+        return 1
+    fi
+    
+    # Create backup of current config if it exists and is valid
+    if [ -f "$SING_BOX_CONFIG" ] && jq . "$SING_BOX_CONFIG" >/dev/null 2>&1; then
+        cp "$SING_BOX_CONFIG" "${SING_BOX_CONFIG}.backup" 2>/dev/null
+    fi
+    
+    mv /tmp/sing-box-config-tmp.json "$SING_BOX_CONFIG"
+    
+    # Ensure the configuration file has proper permissions
+    chmod 644 "$SING_BOX_CONFIG" 2>/dev/null
 }
 
 start_main() {
@@ -97,8 +112,14 @@ start_main() {
     sing_box_uci
 
     # sing-box
-    sing_box_inbound_proxy 1602
-    sing_box_dns
+    if ! sing_box_inbound_proxy 1602; then
+        log "[critical] Failed to initialize sing-box configuration"
+        exit 1
+    fi
+    if ! sing_box_dns; then
+        log "[critical] Failed to configure DNS"
+        exit 1
+    fi
     sing_box_dns_rule_fakeip
     sing_box_rule_dns
     sing_box_create_bypass_ruleset
@@ -132,10 +153,13 @@ start_main() {
     config_get_bool yacd "main" "yacd" "0"
     if [ "$yacd" -eq 1 ]; then
         log "Yacd enable"
-        jq '.experimental.clash_api = {
+        if ! jq '.experimental.clash_api = {
             "external_ui": "ui",
             "external_controller": "0.0.0.0:9090"
-        }' "$SING_BOX_CONFIG" | build_sing_box_config
+        }' "$SING_BOX_CONFIG" | build_sing_box_config; then
+            log "[critical] Failed to add yacd configuration"
+            exit 1
+        fi
     fi
 
     config_get_bool exclude_ntp "main" "exclude_ntp" "0"
@@ -156,7 +180,10 @@ start_main() {
         detour_mixed
     fi
 
-    sing_box_config_check
+    if ! sing_box_config_check; then
+        log "[critical] Configuration validation failed, cannot start sing-box"
+        exit 1
+    fi
     /etc/init.d/sing-box start
     log "Nice"
 }
@@ -670,8 +697,13 @@ list_update() {
     done
 
     if [ "$subscription_updated" -eq 1 ] && [ "$refresh_failed" -eq 0 ]; then
-        if pgrep -f "sing-box" >/dev/null 2>&1; then
-            /etc/init.d/sing-box reload 2>/dev/null || /etc/init.d/sing-box restart 2>/dev/null
+        # Validate configuration before reloading
+        if sing_box_config_check; then
+            if pgrep -f "sing-box" >/dev/null 2>&1; then
+                /etc/init.d/sing-box reload 2>/dev/null || /etc/init.d/sing-box restart 2>/dev/null
+            fi
+        else
+            echolog "❌ Configuration validation failed after subscription update"
         fi
     elif [ "$refresh_failed" -eq 1 ]; then
         echolog "❌ Some subscription refreshes failed - continuing with other updates"
@@ -763,6 +795,15 @@ process_socks5() {
 sing_box_inbound_proxy() {
     local listen_port="$1"
 
+    # Ensure the directory exists
+    mkdir -p "$(dirname "$SING_BOX_CONFIG")"
+    
+    # Validate listen_port is numeric
+    if ! echo "$listen_port" | grep -qE '^[0-9]+$'; then
+        log "[critical] Invalid listen port: $listen_port"
+        return 1
+    fi
+
     jq -n \
     --arg listen_port "$listen_port" \
     '{
@@ -792,6 +833,11 @@ sing_box_inbound_proxy() {
             }
         ]
     }'  > $SING_BOX_CONFIG
+    
+    if [ $? -ne 0 ]; then
+        log "[critical] Failed to create initial sing-box configuration"
+        return 1
+    fi
 }
 
 sing_box_dns() {
@@ -934,6 +980,11 @@ sing_box_dns() {
             },
             "servers": $dns_config.servers
         }' "$SING_BOX_CONFIG" | build_sing_box_config
+    
+    if [ $? -ne 0 ]; then
+        log "[critical] Failed to configure DNS in sing-box"
+        return 1
+    fi
 }
 
 sing_box_create_bypass_ruleset() {
@@ -1177,10 +1228,29 @@ sing_box_rule_dns() {
 }
 
 sing_box_config_check() {
-    if ! sing-box -c $SING_BOX_CONFIG check >/dev/null 2>&1; then
-        log "[critical] Sing-box configuration is invalid"
-        exit 1
+    # First check if the file exists and is readable
+    if [ ! -f "$SING_BOX_CONFIG" ]; then
+        log "[critical] Sing-box configuration file does not exist: $SING_BOX_CONFIG"
+        return 1
     fi
+    
+    # Check if it's valid JSON
+    if ! cat "$SING_BOX_CONFIG" | jq . >/dev/null 2>/tmp/json-error.log; then
+        local json_error=$(cat /tmp/json-error.log 2>/dev/null)
+        log "[critical] Configuration is not valid JSON: $json_error"
+        return 1
+    fi
+    
+    # Check sing-box specific validation
+    if ! sing-box -c $SING_BOX_CONFIG check 2>/tmp/sing-box-check-error.log; then
+        local error_details=$(cat /tmp/sing-box-check-error.log 2>/dev/null)
+        log "[critical] Sing-box configuration is invalid: $error_details"
+        # Show the configuration for debugging
+        log "[debug] Current configuration:"
+        cat "$SING_BOX_CONFIG" 2>/dev/null || echo "Could not read configuration file"
+        return 1
+    fi
+    return 0
 }
 
 sing_box_config_outbound_json() {
@@ -1320,11 +1390,8 @@ sing_box_config_vless() {
               "type": "vless",
               "server": $server,
               "server_port": ($port | tonumber),
-              "uuid": $uuid,
-              "packet_encoding": "",
-              "domain_strategy": "",
-              "flow": $flow
-            }
+              "uuid": $uuid
+            } + (if $flow != "" then {"flow": $flow} else {} end)
           else . end
         ) +
         # Add a new outbound if the required tag is not present
@@ -1335,22 +1402,12 @@ sing_box_config_vless() {
               "type": "vless",
               "server": $server,
               "server_port": ($port | tonumber),
-              "uuid": $uuid,
-              "packet_encoding": "",
-              "domain_strategy": "",
-              "flow": $flow
-            }]
+              "uuid": $uuid
+            } + (if $flow != "" then {"flow": $flow} else {} end)]
           else [] end
         )
       ) |
       # Additional parameters such as transport and tls
-      if $flow != "" then
-        .outbounds |= map(
-          if .tag == $section then
-            .flow = $flow
-          else . end
-        )
-      else . end |
       if $type == "ws" then
         .outbounds |= map(
           if .tag == $section then
@@ -1414,6 +1471,12 @@ sing_box_add_outbound_shadowsocks() {
     local method="$4"
     local password="$5"
 
+    # Validate port is numeric before passing to jq
+    if ! echo "$port" | grep -qE '^[0-9]+$'; then
+        log "[warning] Invalid port number '$port' for Shadowsocks outbound '$tag'"
+        return 1
+    fi
+
     jq \
     --arg tag "$tag" \
     --arg server "$server" \
@@ -1429,6 +1492,11 @@ sing_box_add_outbound_shadowsocks() {
         "method": $method,
         "password": $password
       }]' "$SING_BOX_CONFIG" | build_sing_box_config
+    
+    if [ $? -ne 0 ]; then
+        log "[critical] Failed to add Shadowsocks outbound '$tag'"
+        return 1
+    fi
 }
 
 sing_box_add_outbound_vless() {
@@ -1447,6 +1515,12 @@ sing_box_add_outbound_vless() {
     local sid="${13}"
     local insecure="${14}"
 
+    # Validate port is numeric before passing to jq
+    if ! echo "$port" | grep -qE '^[0-9]+$'; then
+        log "[warning] Invalid port number '$port' for VLESS outbound '$tag'"
+        return 1
+    fi
+    
     jq \
     --arg tag "$tag" \
     --arg server "$server" \
@@ -1472,20 +1546,27 @@ sing_box_add_outbound_vless() {
       }] |
       .outbounds |= map(
         if .tag == $tag then
-          (if $flow != "" then . + {"flow": $flow} else . end) |
+          (if $flow != "" and $flow != "none" then . + {"flow": $flow} else . end) |
           (if $type == "ws" then
-            . + {"transport": {"type": "ws", "path": $path}} |
+            . + {"transport": {"type": "ws", "path": ($path // "/")}} |
             (if $host != "" then (.transport.headers = {"Host": $host}) else . end)
            elif $type == "grpc" then
-            . + {"transport": {"type": "grpc"}}
+            . + {"transport": {"type": "grpc", "service_name": ($path // "")}}
            else . end) |
           (if $security == "tls" or $security == "reality" then
-             . + {"tls": {"enabled": true, "server_name": $sni, "utls": {"enabled": true, "fingerprint": $fp}, "insecure": ($insecure|test("^(1|true|yes)$"; "i"))}} |
-             (if $security == "reality" then .tls += {"reality": {"enabled": true, "public_key": $pbk, "short_id": $sid}} else . end) |
-             (if $sni != "" then . else (.tls | del(.server_name)) end)
+             . + {"tls": {"enabled": true}} |
+             (if $fp != "" then (.tls.utls = {"enabled": true, "fingerprint": $fp}) else (.tls.utls = {"enabled": true, "fingerprint": "chrome"}) end) |
+             (if $sni != "" then (.tls.server_name = $sni) else . end) |
+             (if ($insecure|test("^(1|true|yes)$"; "i")) then (.tls.insecure = true) else . end) |
+             (if $security == "reality" and $pbk != "" then (.tls.reality = {"enabled": true, "public_key": $pbk, "short_id": ($sid // "")}) else . end)
            else . end)
         else . end)
     ' "$SING_BOX_CONFIG" | build_sing_box_config
+    
+    if [ $? -ne 0 ]; then
+        log "[critical] Failed to add VLESS outbound '$tag'"
+        return 1
+    fi
 }
 
 sing_box_selector_add_option() {
@@ -1506,6 +1587,11 @@ sing_box_selector_add_option() {
             )
         end
     )' "$SING_BOX_CONFIG" | build_sing_box_config
+    
+    if [ $? -ne 0 ]; then
+        log "[critical] Failed to add selector option '$option_tag' to '$selector_tag'"
+        return 1
+    fi
 }
 
 process_subscription_section() {
@@ -1549,6 +1635,19 @@ process_subscription_section() {
                 local server=$(echo "$line" | cut -d'@' -f2 | cut -d':' -f1)
                 local port=$(echo "$line" | sed -n 's|.*:\([0-9]\+\).*|\1|p')
                 local enc=$(echo "$line" | cut -d'/' -f3 | cut -d'@' -f1)
+                
+                # Validate required fields
+                if [ -z "$server" ] || [ -z "$port" ] || [ -z "$enc" ]; then
+                    log "[warning] Skipping invalid ss URI: missing server, port, or credentials"
+                    continue
+                fi
+                
+                # Validate port is numeric
+                if ! echo "$port" | grep -qE '^[0-9]+$'; then
+                    log "[warning] Skipping ss URI: invalid port number '$port'"
+                    continue
+                fi
+                
                 local decoded_enc=$(echo "$enc" | base64 -d 2>/dev/null)
                 local method
                 local password
@@ -1559,12 +1658,35 @@ process_subscription_section() {
                     method=$(echo "$enc" | cut -d':' -f1)
                     password=$(echo "$enc" | cut -d':' -f2-)
                 fi
-                sing_box_add_outbound_shadowsocks "$tag" "$server" "$port" "$method" "$password"
+                
+                # Validate credentials
+                if [ -z "$method" ] || [ -z "$password" ]; then
+                    log "[warning] Skipping ss URI: invalid credentials format"
+                    continue
+                fi
+                
+                if ! sing_box_add_outbound_shadowsocks "$tag" "$server" "$port" "$method" "$password"; then
+                    log "[warning] Failed to add Shadowsocks outbound '$tag'"
+                    continue
+                fi
                 ;;
             vless)
                 local uuid=$(echo "$line" | cut -d'/' -f3 | cut -d'@' -f1)
                 local server=$(echo "$line" | cut -d'@' -f2 | cut -d':' -f1)
                 local port=$(echo "$line" | cut -d'@' -f2 | sed 's/.*:\([0-9]\+\).*/\1/')
+                
+                # Validate required fields
+                if [ -z "$server" ] || [ -z "$port" ] || [ -z "$uuid" ]; then
+                    log "[warning] Skipping invalid vless URI: missing server, port, or uuid"
+                    continue
+                fi
+                
+                # Validate port is numeric
+                if ! echo "$port" | grep -qE '^[0-9]+$'; then
+                    log "[warning] Skipping vless URI: invalid port number '$port'"
+                    continue
+                fi
+                
                 local qs=$(echo "$line" | sed -n 's/^[^?]*?\(.*\)$/\1/p')
                 local getp=''; getp() { echo "$qs" | tr '&' '\n' | grep -E "^$1=" | head -n1 | cut -d'=' -f2 | sed 's/%2F/\//g; s/%2C/,/g; s/%3D/=/g; s/%2B/+/g; s/%20/ /g; s/%3B/;/g'; }
                 local type=$(getp type)
@@ -1577,13 +1699,30 @@ process_subscription_section() {
                 local pbk=$(getp pbk)
                 local sid=$(getp sid)
                 local insecure=$(getp allowInsecure)
-                sing_box_add_outbound_vless "$tag" "$server" "$port" "$uuid" "$type" "$security" "$sni" "$fp" "$flow" "$path" "$host" "$pbk" "$sid" "$insecure"
+                
+                if ! sing_box_add_outbound_vless "$tag" "$server" "$port" "$uuid" "$type" "$security" "$sni" "$fp" "$flow" "$path" "$host" "$pbk" "$sid" "$insecure"; then
+                    log "[warning] Failed to add VLESS outbound '$tag'"
+                    continue
+                fi
                 ;;
             trojan)
                 local pass=$(echo "$line" | cut -d'/' -f3 | cut -d'@' -f1)
                 local server=$(echo "$line" | cut -d'@' -f2 | cut -d':' -f1)
                 local port=$(echo "$line" | sed -n 's|.*:\([0-9]\+\).*|\1|p')
                 local sni=$(echo "$line" | sed -n 's/.*[?&]sni=\([^&#]*\).*/\1/p')
+                
+                # Validate required fields
+                if [ -z "$server" ] || [ -z "$port" ] || [ -z "$pass" ]; then
+                    log "[warning] Skipping invalid trojan URI: missing server, port, or password"
+                    continue
+                fi
+                
+                # Validate port is numeric
+                if ! echo "$port" | grep -qE '^[0-9]+$'; then
+                    log "[warning] Skipping trojan URI: invalid port number '$port'"
+                    continue
+                fi
+                
                 jq \
                 --arg tag "$tag" \
                 --arg server "$server" \
@@ -1598,22 +1737,33 @@ process_subscription_section() {
                     "password": $password,
                     "tls": ( if $sni == "" then {"enabled": true} else {"enabled": true, "server_name": $sni} end )
                 }]' "$SING_BOX_CONFIG" | build_sing_box_config
+                
+                if [ $? -ne 0 ]; then
+                    log "[critical] Failed to add Trojan outbound '$tag'"
+                    continue
+                fi
                 ;;
             *)
+                log "[warning] Unsupported URI scheme: $scheme"
                 ;;
         esac
 
-        sing_box_selector_add_option "$section" "$tag"
-        count=$((count+1))
+        if sing_box_selector_add_option "$section" "$tag"; then
+            count=$((count+1))
+        else
+            log "[warning] Failed to add '$tag' to selector '$section'"
+        fi
         idx=$((idx+1))
     done <<EOF
 $uris
 EOF
 
     if [ "$count" -le 0 ]; then
-        log "[critical] No outbounds produced from subscription"
+        log "[critical] No outbounds produced from subscription for section '$section'"
         return 1
     fi
+    
+    log "Successfully processed $count outbounds from subscription for section '$section'"
     return 0
 }
 
@@ -2407,8 +2557,9 @@ check_proxy() {
 
     nolog "Checking sing-box configuration..."
 
-    if ! sing-box -c $SING_BOX_CONFIG check >/dev/null; then
-        nolog "Invalid configuration"
+    if ! sing-box -c $SING_BOX_CONFIG check 2>/tmp/sing-box-check-error.log; then
+        local error_details=$(cat /tmp/sing-box-check-error.log 2>/dev/null)
+        nolog "Invalid configuration: $error_details"
         return 1
     fi
 
