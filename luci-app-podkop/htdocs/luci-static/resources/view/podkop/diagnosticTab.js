@@ -778,8 +778,14 @@ async function updateDiagnostics() {
     runAsyncTask(async () => {
         try {
             let configName = _('Main config');
-            const data = await uci.load('podkop');
-            const proxyString = uci.get('podkop', 'main', 'proxy_string');
+            const loaded = await uci.load('podkop').catch(() => null);
+            if (!loaded) {
+                updateTextElement('config-name-text', document.createTextNode(configName));
+                return;
+            }
+
+            const mainSections = uci.sections('podkop', 'main') || [];
+            const proxyString = (mainSections[0] && mainSections[0].proxy_string) || '';
 
             if (proxyString) {
                 const activeConfig = proxyString.split('\n')
