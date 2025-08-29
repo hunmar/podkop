@@ -31,6 +31,7 @@ function createConfigSection(section, map, network) {
 
     o = s.taboption('basic', form.ListValue, 'proxy_config_type', _('Configuration Type'), _('Select how to configure the proxy'));
     o.value('url', _('Connection URL'));
+    o.value('subscription', _('Subscription URL'));
     o.value('outbound', _('Outbound Config'));
     o.default = 'url';
     o.depends('mode', 'proxy');
@@ -41,6 +42,7 @@ function createConfigSection(section, map, network) {
     o.rows = 5;
     o.rmempty = false;
     o.ucisection = s.section;
+    const proxyStringOption = o;
     o.sectionDescriptions = new Map();
     o.placeholder = 'vless://uuid@server:port?type=tcp&security=tls#main\n// backup ss://method:pass@server:port\n// backup2 vless://uuid@server:port?type=grpc&security=reality#alt';
 
@@ -85,7 +87,20 @@ function createConfigSection(section, map, network) {
         return container;
     };
 
+    // Subscription URL (Xray/V2Ray style)
+    o = s.taboption('basic', form.Value, 'subscription_url', _('Subscription URL'), _('HTTP(S) subscription exporting VLESS/SS URIs; base64 or plain text'));
+    o.depends('proxy_config_type', 'subscription');
+    o.rmempty = false;
+    o.ucisection = s.section;
+    o.placeholder = 'https://example.com/sub';
+    // Validation for subscription_url
     o.validate = function (section_id, value) {
+        if (!value || value.length === 0) return _('Subscription URL cannot be empty');
+        return validateUrl(value);
+    };
+
+    // Validation for proxy_string (single active vless:// or ss:// line)
+    proxyStringOption.validate = function (section_id, value) {
         if (!value || value.length === 0) {
             return true;
         }
