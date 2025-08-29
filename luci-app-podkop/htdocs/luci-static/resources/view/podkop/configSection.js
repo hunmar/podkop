@@ -102,7 +102,7 @@ function createConfigSection(section, map, network) {
     // Validation for proxy_string (single active vless:// or ss:// line)
     proxyStringOption.validate = function (section_id, value) {
         if (!value || value.length === 0) {
-            return true;
+            return _('Proxy configuration cannot be empty');
         }
 
         try {
