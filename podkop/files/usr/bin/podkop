@@ -1151,12 +1151,21 @@ sing_box_outdound() {
                 return
             fi
         elif [ "$proxy_config_type" = "subscription" ]; then
+            # Support both single URL (legacy) and multiple URLs
             config_get subscription_url $section "subscription_url"
-            if [ -z "$subscription_url" ]; then
-                log "[critical] Subscription URL is not set for section $section"
+            config_get subscription_urls $section "subscription_urls"
+            
+            local urls_to_process=""
+            if [ -n "$subscription_urls" ]; then
+                urls_to_process="$subscription_urls"
+            elif [ -n "$subscription_url" ]; then
+                urls_to_process="$subscription_url"
+            else
+                log "[critical] No subscription URLs set for section $section"
                 return 1
             fi
-            if ! process_subscription_section "$section" "$subscription_url"; then
+            
+            if ! process_subscription_section "$section" "$urls_to_process"; then
                 log "[critical] Failed to process subscription for $section"
                 return 1
             fi
@@ -1583,6 +1592,172 @@ sing_box_add_outbound_vless() {
     fi
 }
 
+sing_box_add_outbound_vmess() {
+    local tag="$1"
+    local server="$2"
+    local port="$3"
+    local uuid="$4"
+    local alterId="$5"
+    local security="$6"
+    local network="$7"
+    local tls="$8"
+    local sni="$9"
+    local path="${10}"
+    local host="${11}"
+    local allow_insecure="${12}"
+
+    # Validate port is numeric before passing to jq
+    if ! echo "$port" | grep -qE '^[0-9]+$'; then
+        log "[warning] Invalid port number '$port' for VMess outbound '$tag'"
+        return 1
+    fi
+    
+    jq \
+    --arg tag "$tag" \
+    --arg server "$server" \
+    --argjson port "$port" \
+    --arg uuid "$uuid" \
+    --argjson alterId "$alterId" \
+    --arg security "$security" \
+    --arg network "$network" \
+    --arg tls "$tls" \
+    --arg sni "$sni" \
+    --arg path "$path" \
+    --arg host "$host" \
+    --arg allow_insecure "$allow_insecure" \
+    '. |
+      .outbounds += [{
+        "tag": $tag,
+        "type": "vmess",
+        "server": $server,
+        "server_port": ($port | tonumber),
+        "uuid": $uuid,
+        "alter_id": ($alterId | tonumber),
+        "security": $security
+      }] |
+      .outbounds |= map(
+        if .tag == $tag then
+          (if $network == "ws" then
+            . + {"transport": {"type": "ws", "path": ($path // "/")}} |
+            (if $host != "" then (.transport.headers = {"Host": $host}) else . end)
+           elif $network == "grpc" then
+            . + {"transport": {"type": "grpc", "service_name": ($path // "")}}
+           elif $network == "h2" then
+            . + {"transport": {"type": "http", "path": ($path // "/")}} |
+            (if $host != "" then (.transport.host = [$host]) else . end)
+           else . end) |
+          (if $tls == "tls" then
+             . + {"tls": {"enabled": true}} |
+             (if $sni != "" then (.tls.server_name = $sni) else . end) |
+             (if ($allow_insecure|test("^(1|true|yes)$"; "i")) then (.tls.insecure = true) else . end)
+           else . end)
+        else . end)
+    ' "$SING_BOX_CONFIG" | build_sing_box_config
+    
+    if [ $? -ne 0 ]; then
+        log "[critical] Failed to add VMess outbound '$tag'"
+        return 1
+    fi
+}
+
+sing_box_add_outbound_hysteria() {
+    local tag="$1"
+    local server="$2"
+    local port="$3"
+    local password="$4"
+    local protocol="$5"
+    local obfs_password="$6"
+    local sni="$7"
+    local allow_insecure="$8"
+
+    # Validate port is numeric before passing to jq
+    if ! echo "$port" | grep -qE '^[0-9]+$'; then
+        log "[warning] Invalid port number '$port' for Hysteria outbound '$tag'"
+        return 1
+    fi
+    
+    jq \
+    --arg tag "$tag" \
+    --arg server "$server" \
+    --argjson port "$port" \
+    --arg password "$password" \
+    --arg protocol "$protocol" \
+    --arg obfs_password "$obfs_password" \
+    --arg sni "$sni" \
+    --arg allow_insecure "$allow_insecure" \
+    '. |
+      .outbounds += [{
+        "tag": $tag,
+        "type": "hysteria",
+        "server": $server,
+        "server_port": ($port | tonumber),
+        "auth_str": $password,
+        "protocol": ($protocol // "udp"),
+        "tls": {"enabled": true}
+      }] |
+      .outbounds |= map(
+        if .tag == $tag then
+          (if $obfs_password != "" then . + {"obfs": $obfs_password} else . end) |
+          (if $sni != "" then (.tls.server_name = $sni) else . end) |
+          (if ($allow_insecure|test("^(1|true|yes)$"; "i")) then (.tls.insecure = true) else . end)
+        else . end)
+    ' "$SING_BOX_CONFIG" | build_sing_box_config
+    
+    if [ $? -ne 0 ]; then
+        log "[critical] Failed to add Hysteria outbound '$tag'"
+        return 1
+    fi
+}
+
+sing_box_add_outbound_hysteria2() {
+    local tag="$1"
+    local server="$2"
+    local port="$3"
+    local password="$4"
+    local obfs_type="$5"
+    local obfs_password="$6"
+    local sni="$7"
+    local allow_insecure="$8"
+
+    # Validate port is numeric before passing to jq
+    if ! echo "$port" | grep -qE '^[0-9]+$'; then
+        log "[warning] Invalid port number '$port' for Hysteria2 outbound '$tag'"
+        return 1
+    fi
+    
+    jq \
+    --arg tag "$tag" \
+    --arg server "$server" \
+    --argjson port "$port" \
+    --arg password "$password" \
+    --arg obfs_type "$obfs_type" \
+    --arg obfs_password "$obfs_password" \
+    --arg sni "$sni" \
+    --arg allow_insecure "$allow_insecure" \
+    '. |
+      .outbounds += [{
+        "tag": $tag,
+        "type": "hysteria2",
+        "server": $server,
+        "server_port": ($port | tonumber),
+        "password": $password,
+        "tls": {"enabled": true}
+      }] |
+      .outbounds |= map(
+        if .tag == $tag then
+          (if $obfs_type != "" and $obfs_password != "" then 
+            . + {"obfs": {"type": $obfs_type, "password": $obfs_password}} else . end) |
+          (if $sni != "" then (.tls.server_name = $sni) else . end) |
+          (if ($allow_insecure|test("^(1|true|yes)$"; "i")) then (.tls.insecure = true) else . end)
+        else . end)
+    ' "$SING_BOX_CONFIG" | build_sing_box_config
+    
+    if [ $? -ne 0 ]; then
+        log "[critical] Failed to add Hysteria2 outbound '$tag'"
+        return 1
+    fi
+}
+
 sing_box_selector_add_option() {
     local selector_tag="$1"
     local option_tag="$2"
@@ -1667,30 +1842,121 @@ sing_box_urltest_add_option() {
 
 process_subscription_section() {
     local section="$1"
-    local url="$2"
+    local urls="$2"
 
-    log "Fetching subscription for $section"
+    log "Processing subscriptions for $section"
 
-    local content
-    content=$(download_to_stream "$url")
+    # Get subscription settings
+    local filter_mode filter_keywords allow_insecure user_agent
+    config_get filter_mode "$section" "subscription_filter_mode" "disabled"
+    config_get filter_keywords "$section" "subscription_filter_keywords"
+    config_get allow_insecure "$section" "subscription_allow_insecure" "0"
+    config_get user_agent "$section" "subscription_user_agent"
 
-    if [ -z "$content" ]; then
-        log "[critical] Empty subscription content"
+    local all_uris=""
+    local url_count=0
+    local temp_file="/tmp/podkop_subscription_$$"
+    
+    # Process each URL
+    echo "$urls" | while IFS= read -r url; do
+        [ -z "$url" ] && continue
+        url_count=$((url_count + 1))
+        
+        log "Fetching subscription URL $url_count: $url"
+
+        local content
+        if [ -n "$user_agent" ]; then
+            content=$(curl -s -L --user-agent "$user_agent" --connect-timeout 10 --max-time 60 "$url")
+        else
+            content=$(download_to_stream "$url")
+        fi
+
+        if [ -z "$content" ]; then
+            log "[warning] Empty subscription content from $url"
+            continue
+        fi
+
+        local decoded
+        # Try JSON format first (SIP008 for Shadowsocks)
+        if echo "$content" | jq -e '.servers' >/dev/null 2>&1; then
+            decoded="$content"
+        else
+            # Try base64 decoding
+            decoded="$(echo "$content" | tr -d '\n\r' | base64 -d 2>/dev/null)"; rc=$?
+            if [ $rc -ne 0 ] || [ -z "$decoded" ]; then
+                decoded="$content"
+            fi
+        fi
+
+        local uris
+        # Check if it's JSON format
+        if echo "$decoded" | jq -e '.servers' >/dev/null 2>&1; then
+            # SIP008 format - convert to URI format
+            uris=$(echo "$decoded" | jq -r '.servers[] | "ss://\(.method):\(.password)@\(.server):\(.server_port)#\(.remarks // .server)"' 2>/dev/null)
+        else
+            # Standard URI format
+            uris=$(echo "$decoded" | tr '\r' '\n' | tr -s '\n' | sed 's/^\s*//;s/\s*$//' | grep -E '^(vless|vmess|ss|trojan|hysteria|hysteria2|hy2|tuic)://')
+        fi
+
+        if [ -n "$uris" ]; then
+            echo "$uris" >> "$temp_file"
+            log "Successfully fetched $(echo "$uris" | wc -l) nodes from $url"
+        else
+            log "[warning] No valid URIs found in subscription from $url"
+        fi
+    done
+    
+    # Read all URIs from temp file
+    if [ -f "$temp_file" ]; then
+        all_uris=$(cat "$temp_file")
+        rm -f "$temp_file"
+    fi
+
+    if [ -z "$all_uris" ]; then
+        log "[critical] No valid URIs found in any subscription"
         return 1
     fi
 
-    local decoded
-    decoded="$(echo "$content" | tr -d '\n\r' | base64 -d 2>/dev/null)"; rc=$?
-    if [ $rc -ne 0 ] || [ -z "$decoded" ]; then
-        decoded="$content"
-    fi
-
-    local uris
-    uris=$(echo "$decoded" | tr '\r' '\n' | tr -s '\n' | sed 's/^\s*//;s/\s*$//' | grep -E '^(vless|ss|trojan)://')
-
-    if [ -z "$uris" ]; then
-        log "[critical] No valid URIs found in subscription"
-        return 1
+    # Apply filtering if enabled
+    local filtered_uris="$all_uris"
+    if [ "$filter_mode" != "disabled" ] && [ -n "$filter_keywords" ]; then
+        local temp_filtered=""
+        echo "$all_uris" | while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            local node_label=""
+            # Extract node label from URI fragment
+            if echo "$line" | grep -q '#'; then
+                node_label=$(echo "$line" | sed 's/.*#//' | sed 's/%20/ /g' | sed 's/%2B/+/g')
+            fi
+            
+            local should_filter=0
+            # Check each filter keyword
+            for keyword in $filter_keywords; do
+                [ -z "$keyword" ] && continue
+                if echo "$node_label" | grep -qi "$keyword"; then
+                    should_filter=1
+                    break
+                fi
+            done
+            
+            # Apply filter based on mode
+            if [ "$filter_mode" = "blacklist" ]; then
+                # Blacklist: exclude if keyword matches
+                if [ "$should_filter" -eq 0 ]; then
+                    temp_filtered="$temp_filtered$line\n"
+                else
+                    log "Filtering out node (blacklist): $node_label"
+                fi
+            elif [ "$filter_mode" = "whitelist" ]; then
+                # Whitelist: include only if keyword matches
+                if [ "$should_filter" -eq 1 ]; then
+                    temp_filtered="$temp_filtered$line\n"
+                else
+                    log "Filtering out node (whitelist): $node_label"
+                fi
+            fi
+        done
+        filtered_uris=$(echo -e "$temp_filtered")
     fi
 
     local idx=1
@@ -1778,6 +2044,42 @@ process_subscription_section() {
                     continue
                 fi
                 ;;
+            vmess)
+                # Parse VMess URI (base64 encoded JSON)
+                local vmess_data=$(echo "$line" | cut -d'/' -f3 | base64 -d 2>/dev/null)
+                if [ -z "$vmess_data" ]; then
+                    log "[warning] Failed to decode VMess URI"
+                    continue
+                fi
+                
+                local server=$(echo "$vmess_data" | jq -r '.add // empty')
+                local port=$(echo "$vmess_data" | jq -r '.port // empty')
+                local uuid=$(echo "$vmess_data" | jq -r '.id // empty')
+                local alterId=$(echo "$vmess_data" | jq -r '.aid // 0')
+                local security=$(echo "$vmess_data" | jq -r '.scy // "auto"')
+                local network=$(echo "$vmess_data" | jq -r '.net // "tcp"')
+                local tls=$(echo "$vmess_data" | jq -r '.tls // "none"')
+                local sni=$(echo "$vmess_data" | jq -r '.sni // empty')
+                local path=$(echo "$vmess_data" | jq -r '.path // empty')
+                local host=$(echo "$vmess_data" | jq -r '.host // empty')
+                
+                # Validate required fields
+                if [ -z "$server" ] || [ -z "$port" ] || [ -z "$uuid" ]; then
+                    log "[warning] Skipping invalid vmess URI: missing server, port, or uuid"
+                    continue
+                fi
+                
+                # Validate port is numeric
+                if ! echo "$port" | grep -qE '^[0-9]+$'; then
+                    log "[warning] Skipping vmess URI: invalid port number '$port'"
+                    continue
+                fi
+                
+                if ! sing_box_add_outbound_vmess "$tag" "$server" "$port" "$uuid" "$alterId" "$security" "$network" "$tls" "$sni" "$path" "$host" "$allow_insecure"; then
+                    log "[warning] Failed to add VMess outbound '$tag'"
+                    continue
+                fi
+                ;;
             trojan)
                 local pass=$(echo "$line" | cut -d'/' -f3 | cut -d'@' -f1)
                 local server=$(echo "$line" | cut -d'@' -f2 | cut -d':' -f1)
@@ -1816,6 +2118,60 @@ process_subscription_section() {
                     continue
                 fi
                 ;;
+            hysteria)
+                # Parse Hysteria URI
+                local auth=$(echo "$line" | sed -n 's/.*auth=\([^&#]*\).*/\1/p')
+                local server=$(echo "$line" | cut -d'@' -f2 | cut -d':' -f1)
+                local port=$(echo "$line" | sed -n 's|.*:\([0-9]\+\).*|\1|p')
+                local protocol=$(echo "$line" | sed -n 's/.*protocol=\([^&#]*\).*/\1/p')
+                local obfs_password=$(echo "$line" | sed -n 's/.*obfsParam=\([^&#]*\).*/\1/p')
+                local sni=$(echo "$line" | sed -n 's/.*peer=\([^&#]*\).*/\1/p')
+                local insecure=$(echo "$line" | sed -n 's/.*insecure=\([^&#]*\).*/\1/p')
+                
+                # Validate required fields
+                if [ -z "$server" ] || [ -z "$port" ]; then
+                    log "[warning] Skipping invalid hysteria URI: missing server or port"
+                    continue
+                fi
+                
+                # Validate port is numeric
+                if ! echo "$port" | grep -qE '^[0-9]+$'; then
+                    log "[warning] Skipping hysteria URI: invalid port number '$port'"
+                    continue
+                fi
+                
+                if ! sing_box_add_outbound_hysteria "$tag" "$server" "$port" "$auth" "$protocol" "$obfs_password" "$sni" "$allow_insecure"; then
+                    log "[warning] Failed to add Hysteria outbound '$tag'"
+                    continue
+                fi
+                ;;
+            hysteria2|hy2)
+                # Parse Hysteria2 URI
+                local password=$(echo "$line" | cut -d'/' -f3 | cut -d'@' -f1)
+                local server=$(echo "$line" | cut -d'@' -f2 | cut -d':' -f1)
+                local port=$(echo "$line" | sed -n 's|.*:\([0-9]\+\).*|\1|p')
+                local obfs_type=$(echo "$line" | sed -n 's/.*obfs=\([^&#]*\).*/\1/p')
+                local obfs_password=$(echo "$line" | sed -n 's/.*obfs-password=\([^&#]*\).*/\1/p')
+                local sni=$(echo "$line" | sed -n 's/.*sni=\([^&#]*\).*/\1/p')
+                local insecure=$(echo "$line" | sed -n 's/.*insecure=\([^&#]*\).*/\1/p')
+                
+                # Validate required fields
+                if [ -z "$server" ] || [ -z "$port" ] || [ -z "$password" ]; then
+                    log "[warning] Skipping invalid hysteria2 URI: missing server, port, or password"
+                    continue
+                fi
+                
+                # Validate port is numeric
+                if ! echo "$port" | grep -qE '^[0-9]+$'; then
+                    log "[warning] Skipping hysteria2 URI: invalid port number '$port'"
+                    continue
+                fi
+                
+                if ! sing_box_add_outbound_hysteria2 "$tag" "$server" "$port" "$password" "$obfs_type" "$obfs_password" "$sni" "$allow_insecure"; then
+                    log "[warning] Failed to add Hysteria2 outbound '$tag'"
+                    continue
+                fi
+                ;;
             *)
                 log "[warning] Unsupported URI scheme: $scheme"
                 ;;
@@ -1834,7 +2190,7 @@ process_subscription_section() {
         fi
         idx=$((idx+1))
     done <<EOF
-$uris
+$filtered_uris
 EOF
 
     if [ "$count" -le 0 ]; then
@@ -1851,14 +2207,185 @@ refresh_subscription() {
     config_get mode "$section" "mode"
     config_get proxy_config_type "$section" "proxy_config_type"
     if [ "$mode" = "proxy" ] && [ "$proxy_config_type" = "subscription" ]; then
+        # Support both single URL (legacy) and multiple URLs
         config_get subscription_url $section "subscription_url"
-        if [ -n "$subscription_url" ]; then
+        config_get subscription_urls $section "subscription_urls"
+        
+        local urls_to_process=""
+        if [ -n "$subscription_urls" ]; then
+            urls_to_process="$subscription_urls"
+        elif [ -n "$subscription_url" ]; then
+            urls_to_process="$subscription_url"
+        fi
+        
+        if [ -n "$urls_to_process" ]; then
             local prefix="$section-"
             jq --arg section "$section" --arg prefix "$prefix" '
                 .outbounds |= map(select((.tag | startswith($prefix)) | not)) |
                 .outbounds |= map(select(.tag != $section))
             ' "$SING_BOX_CONFIG" | build_sing_box_config
-            process_subscription_section "$section" "$subscription_url"
+            process_subscription_section "$section" "$urls_to_process"
+        fi
+    fi
+}
+
+# Auto-update subscriptions based on configuration
+auto_update_subscriptions() {
+    log "Checking for subscription auto-updates"
+    
+    local updated_any=0
+    for section in $(uci show podkop | awk -F'[.=]' '/=main|=extra/ {print $2}' | sort -u); do
+        config_get mode "$section" "mode"
+        config_get proxy_config_type "$section" "proxy_config_type"
+        config_get auto_update "$section" "subscription_auto_update" "0"
+        
+        if [ "$mode" = "proxy" ] && [ "$proxy_config_type" = "subscription" ] && [ "$auto_update" = "1" ]; then
+            config_get update_interval "$section" "subscription_update_interval" "24h"
+            
+            # Convert interval to seconds
+            local interval_seconds=86400  # default 24h
+            case "$update_interval" in
+                *h) interval_seconds=$(($(echo "$update_interval" | sed 's/h//') * 3600)) ;;
+                *m) interval_seconds=$(($(echo "$update_interval" | sed 's/m//') * 60)) ;;
+                *d) interval_seconds=$(($(echo "$update_interval" | sed 's/d//') * 86400)) ;;
+                *) interval_seconds=86400 ;;
+            esac
+            
+            # Check if update is needed
+            local last_update_file="/tmp/podkop_subscription_${section}_last_update"
+            local current_time=$(date +%s)
+            local last_update=0
+            
+            if [ -f "$last_update_file" ]; then
+                last_update=$(cat "$last_update_file" 2>/dev/null || echo 0)
+            fi
+            
+            local time_diff=$((current_time - last_update))
+            if [ $time_diff -ge $interval_seconds ]; then
+                log "Auto-updating subscription for section $section (last update: ${time_diff}s ago)"
+                if refresh_subscription "$section"; then
+                    echo "$current_time" > "$last_update_file"
+                    updated_any=1
+                    log "Successfully auto-updated subscription for $section"
+                else
+                    log "Failed to auto-update subscription for $section"
+                fi
+            else
+                log "Subscription for $section is up to date (next update in $((interval_seconds - time_diff))s)"
+            fi
+        fi
+    done
+    
+    if [ "$updated_any" -eq 1 ]; then
+        # Validate configuration before reloading
+        if sing_box_config_check; then
+            if pgrep -f "sing-box" >/dev/null 2>&1; then
+                /etc/init.d/sing-box reload 2>/dev/null || /etc/init.d/sing-box restart 2>/dev/null
+                log "Reloaded sing-box after subscription auto-update"
+            fi
+        else
+            log "[critical] Configuration validation failed after subscription auto-update"
+        fi
+    fi
+}
+
+# Display subscription status and information
+subscription_status() {
+    local section="${1:-main}"
+    
+    echo "=== Subscription Status for Section: $section ==="
+    echo
+    
+    config_get mode "$section" "mode"
+    config_get proxy_config_type "$section" "proxy_config_type"
+    
+    if [ "$mode" != "proxy" ] || [ "$proxy_config_type" != "subscription" ]; then
+        echo "Section '$section' is not configured for subscription mode"
+        echo "Mode: $mode, Config Type: $proxy_config_type"
+        return 1
+    fi
+    
+    # Display subscription configuration
+    echo "=== Subscription Configuration ==="
+    config_get subscription_urls "$section" "subscription_urls"
+    config_get subscription_url "$section" "subscription_url"
+    config_get auto_update "$section" "subscription_auto_update" "0"
+    config_get update_interval "$section" "subscription_update_interval" "24h"
+    config_get filter_mode "$section" "subscription_filter_mode" "disabled"
+    config_get filter_keywords "$section" "subscription_filter_keywords"
+    config_get allow_insecure "$section" "subscription_allow_insecure" "0"
+    config_get user_agent "$section" "subscription_user_agent"
+    config_get use_urltest "$section" "use_urltest" "0"
+    
+    if [ -n "$subscription_urls" ]; then
+        echo "Subscription URLs: $subscription_urls"
+    elif [ -n "$subscription_url" ]; then
+        echo "Legacy Subscription URL: $subscription_url"
+    else
+        echo "No subscription URLs configured"
+    fi
+    
+    echo "Auto Update: $([ "$auto_update" = "1" ] && echo "Enabled ($update_interval)" || echo "Disabled")"
+    echo "Filter Mode: $filter_mode"
+    [ -n "$filter_keywords" ] && echo "Filter Keywords: $filter_keywords"
+    echo "Allow Insecure TLS: $([ "$allow_insecure" = "1" ] && echo "Yes" || echo "No")"
+    echo "Use URLTest: $([ "$use_urltest" = "1" ] && echo "Yes" || echo "No")"
+    [ -n "$user_agent" ] && echo "Custom User-Agent: $user_agent"
+    
+    echo
+    echo "=== Last Update Information ==="
+    local last_update_file="/tmp/podkop_subscription_${section}_last_update"
+    if [ -f "$last_update_file" ]; then
+        local last_update=$(cat "$last_update_file" 2>/dev/null || echo 0)
+        local current_time=$(date +%s)
+        local time_diff=$((current_time - last_update))
+        echo "Last Update: $(date -d "@$last_update" 2>/dev/null || echo "Unknown")"
+        echo "Time Since Last Update: ${time_diff}s ($(($time_diff / 3600))h $(($time_diff % 3600 / 60))m)"
+    else
+        echo "No update history found"
+    fi
+    
+    echo
+    echo "=== Current Outbounds from Subscriptions ==="
+    if [ -f "$SING_BOX_CONFIG" ]; then
+        local prefix="${section}-"
+        local outbound_count=$(jq -r --arg prefix "$prefix" '[.outbounds[] | select(.tag | startswith($prefix))] | length' "$SING_BOX_CONFIG" 2>/dev/null || echo "0")
+        echo "Active subscription outbounds: $outbound_count"
+        
+        if [ "$outbound_count" -gt 0 ]; then
+            echo
+            echo "Outbound Details:"
+            jq -r --arg prefix "$prefix" '.outbounds[] | select(.tag | startswith($prefix)) | "  - \(.tag): \(.type) \(.server):\(.server_port)"' "$SING_BOX_CONFIG" 2>/dev/null || echo "  Error reading outbound details"
+        fi
+        
+        # Check if section is in selector/urltest
+        local aggregator_info=$(jq -r --arg section "$section" '.outbounds[] | select(.tag == $section) | "Type: \(.type), Outbounds: \(.outbounds | length)"' "$SING_BOX_CONFIG" 2>/dev/null)
+        if [ -n "$aggregator_info" ]; then
+            echo
+            echo "Aggregator Status: $aggregator_info"
+        fi
+    else
+        echo "No sing-box configuration found"
+    fi
+    
+    echo
+    echo "=== Subscription Test ==="
+    if [ -n "$subscription_urls" ]; then
+        echo "$subscription_urls" | while IFS= read -r url; do
+            [ -z "$url" ] && continue
+            echo -n "Testing $url: "
+            if curl -s -I --connect-timeout 5 --max-time 10 "$url" >/dev/null 2>&1; then
+                echo "OK"
+            else
+                echo "FAILED"
+            fi
+        done
+    elif [ -n "$subscription_url" ]; then
+        echo -n "Testing $subscription_url: "
+        if curl -s -I --connect-timeout 5 --max-time 10 "$subscription_url" >/dev/null 2>&1; then
+            echo "OK"
+        else
+            echo "FAILED"
         fi
     fi
 }
@@ -3481,6 +4008,12 @@ case "$1" in
         ;;
     refresh_subscription)
         refresh_subscription "$2"
+        ;;
+    auto_update_subscriptions)
+        auto_update_subscriptions
+        ;;
+    subscription_status)
+        subscription_status "$2"
         ;;
     check_proxy)
         check_proxy

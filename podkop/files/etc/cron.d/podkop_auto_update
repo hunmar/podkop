@@ -1,0 +1,5 @@
+# Podkop automatic subscription updates
+# This file is managed by podkop - do not edit manually
+
+# Auto-update subscriptions every hour (will check internal timers)
+0 * * * * root /usr/bin/podkop auto_update_subscriptions >/dev/null 2>&1

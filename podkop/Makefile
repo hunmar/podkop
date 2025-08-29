@@ -55,6 +55,9 @@ define Package/podkop/install
 
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) ./files/usr/bin/podkop $(1)/usr/bin/podkop
+
+	$(INSTALL_DIR) $(1)/etc/cron.d
+	$(INSTALL_CONF) ./files/etc/cron.d/podkop_auto_update $(1)/etc/cron.d/podkop_auto_update
 endef
 
 $(eval $(call BuildPackage,podkop))

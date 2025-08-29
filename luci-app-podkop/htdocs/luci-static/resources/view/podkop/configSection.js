@@ -31,7 +31,7 @@ function createConfigSection(section, map, network) {
 
     o = s.taboption('basic', form.ListValue, 'proxy_config_type', _('Configuration Type'), _('Select how to configure the proxy'));
     o.value('url', _('Connection URL'));
-    o.value('subscription', _('Subscription URL'));
+    o.value('subscription', _('Subscription URLs'));
     o.value('outbound', _('Outbound Config'));
     o.default = 'url';
     o.depends('mode', 'proxy');
@@ -87,16 +87,210 @@ function createConfigSection(section, map, network) {
         return container;
     };
 
-    // Subscription URL (Xray/V2Ray style)
-    o = s.taboption('basic', form.Value, 'subscription_url', _('Subscription URL'), _('HTTP(S) subscription exporting VLESS/SS URIs; base64 or plain text'));
+    // Multiple Subscription URLs
+    o = s.taboption('basic', form.DynamicList, 'subscription_urls', _('Subscription URLs'), _('HTTP(S) subscriptions exporting VLESS/VMess/SS/Trojan URIs; supports base64 or plain text formats'));
     o.depends('proxy_config_type', 'subscription');
     o.rmempty = false;
     o.ucisection = s.section;
     o.placeholder = 'https://example.com/sub';
-    // Validation for subscription_url
     o.validate = function (section_id, value) {
-        if (!value || value.length === 0) return _('Subscription URL cannot be empty');
+        if (!value || value.length === 0) return _('At least one subscription URL is required');
         return validateUrl(value);
+    };
+
+    // Legacy single subscription URL (for backward compatibility)
+    o = s.taboption('basic', form.Value, 'subscription_url', _('Legacy Subscription URL'), _('Single subscription URL (deprecated, use Subscription URLs above)'));
+    o.depends('proxy_config_type', 'subscription');
+    o.rmempty = true;
+    o.ucisection = s.section;
+    o.placeholder = 'https://example.com/sub (legacy)';
+    o.validate = function (section_id, value) {
+        if (!value || value.length === 0) return true;
+        return validateUrl(value);
+    };
+
+    // Subscription Settings
+    o = s.taboption('basic', form.Flag, 'subscription_auto_update', _('Auto Update'), _('Automatically update subscriptions at specified intervals'));
+    o.depends('proxy_config_type', 'subscription');
+    o.default = '0';
+    o.rmempty = false;
+    o.ucisection = s.section;
+
+    o = s.taboption('basic', form.ListValue, 'subscription_update_interval', _('Update Interval'), _('How often to update subscriptions automatically'));
+    o.depends('subscription_auto_update', '1');
+    o.value('1h', _('1 hour'));
+    o.value('6h', _('6 hours'));
+    o.value('12h', _('12 hours'));
+    o.value('24h', _('24 hours'));
+    o.value('48h', _('48 hours'));
+    o.value('7d', _('7 days'));
+    o.default = '24h';
+    o.rmempty = false;
+    o.ucisection = s.section;
+
+    o = s.taboption('basic', form.ListValue, 'subscription_filter_mode', _('Node Filtering'), _('Filter subscription nodes based on keywords'));
+    o.depends('proxy_config_type', 'subscription');
+    o.value('disabled', _('Disabled'));
+    o.value('blacklist', _('Blacklist (exclude matching)'));
+    o.value('whitelist', _('Whitelist (include only matching)'));
+    o.default = 'disabled';
+    o.rmempty = false;
+    o.ucisection = s.section;
+
+    o = s.taboption('basic', form.DynamicList, 'subscription_filter_keywords', _('Filter Keywords'), _('Keywords to filter nodes by (case insensitive). Examples: expire, trial, test'));
+    o.depends('subscription_filter_mode', 'blacklist');
+    o.depends('subscription_filter_mode', 'whitelist');
+    o.placeholder = 'expire';
+    o.rmempty = true;
+    o.ucisection = s.section;
+
+    o = s.taboption('basic', form.Flag, 'subscription_allow_insecure', _('Allow Insecure TLS'), _('Allow insecure TLS connections for subscription nodes'));
+    o.depends('proxy_config_type', 'subscription');
+    o.default = '0';
+    o.rmempty = false;
+    o.ucisection = s.section;
+
+    o = s.taboption('basic', form.Value, 'subscription_user_agent', _('Custom User-Agent'), _('Custom User-Agent string for subscription requests (optional)'));
+    o.depends('proxy_config_type', 'subscription');
+    o.placeholder = 'Mozilla/5.0 (compatible; podkop)';
+    o.rmempty = true;
+    o.ucisection = s.section;
+
+    // Subscription Management Buttons
+    o = s.taboption('basic', form.Button, '_update_subscription', _('Update Subscriptions'), _('Manually update subscription nodes'));
+    o.depends('proxy_config_type', 'subscription');
+    o.inputtitle = _('Update Now');
+    o.onclick = function(ev) {
+        const section_id = this.section.section;
+        ui.showModal(_('Updating Subscriptions'), [
+            E('p', {}, _('Updating subscription nodes, please wait...')),
+            E('div', { 'class': 'spinning' })
+        ]);
+        
+        return fs.exec('/usr/bin/podkop', ['refresh_subscription', section_id])
+        .then(function(res) {
+            ui.hideModal();
+            if (res.code === 0) {
+                ui.addNotification(null, E('p', _('Subscription updated successfully')));
+                // Reload the page to show updated configuration
+                window.location.reload();
+            } else {
+                ui.addNotification(null, E('p', { 'class': 'alert-message warning' }, 
+                    _('Subscription update failed: %s').format(res.stderr || res.stdout || 'Unknown error')));
+            }
+        })
+        .catch(function(err) {
+            ui.hideModal();
+            ui.addNotification(null, E('p', { 'class': 'alert-message warning' }, 
+                _('Subscription update failed: %s').format(err.message)));
+        });
+    };
+
+    o = s.taboption('basic', form.Button, '_test_subscription', _('Test Subscriptions'), _('Test subscription URLs without applying changes'));
+    o.depends('proxy_config_type', 'subscription');
+    o.inputtitle = _('Test URLs');
+    o.onclick = function(ev) {
+        const section_id = this.section.section;
+        const subscription_urls = uci.get('podkop', section_id, 'subscription_urls') || [];
+        const subscription_url = uci.get('podkop', section_id, 'subscription_url');
+        
+        let urls_to_test = [];
+        if (subscription_urls && subscription_urls.length > 0) {
+            urls_to_test = subscription_urls;
+        } else if (subscription_url) {
+            urls_to_test = [subscription_url];
+        }
+        
+        if (urls_to_test.length === 0) {
+            ui.addNotification(null, E('p', { 'class': 'alert-message warning' }, _('No subscription URLs configured')));
+            return;
+        }
+        
+        ui.showModal(_('Testing Subscription URLs'), [
+            E('p', {}, _('Testing %s subscription URLs...').format(urls_to_test.length)),
+            E('div', { 'class': 'spinning' })
+        ]);
+        
+        // Test each URL
+        Promise.all(urls_to_test.map(url => 
+            fetch(url, { method: 'HEAD', mode: 'no-cors' })
+            .then(() => ({ url: url, status: 'OK' }))
+            .catch(err => ({ url: url, status: 'Error: ' + err.message }))
+        ))
+        .then(results => {
+            ui.hideModal();
+            const resultText = results.map(r => `${r.url}: ${r.status}`).join('\n');
+            ui.showModal(_('Subscription Test Results'), [
+                E('pre', {}, resultText),
+                E('div', { 'class': 'right' }, [
+                    E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close'))
+                ])
+            ]);
+        });
+    };
+
+    // URLTest Configuration
+    o = s.taboption('basic', form.Flag, 'use_urltest', _('Use URLTest'), _('Use automatic server selection based on latency instead of manual selector'));
+    o.depends('proxy_config_type', 'subscription');
+    o.default = '0';
+    o.rmempty = false;
+    o.ucisection = s.section;
+
+    o = s.taboption('basic', form.Value, 'urltest_url', _('Test URL'), _('URL used for latency testing'));
+    o.depends('use_urltest', '1');
+    o.default = 'https://cp.cloudflare.com/generate_204';
+    o.placeholder = 'https://cp.cloudflare.com/generate_204';
+    o.rmempty = false;
+    o.ucisection = s.section;
+    o.validate = function (section_id, value) {
+        if (!value || value.length === 0) return _('Test URL cannot be empty');
+        return validateUrl(value);
+    };
+
+    o = s.taboption('basic', form.Value, 'urltest_interval', _('Test Interval'), _('Interval between latency tests in seconds'));
+    o.depends('use_urltest', '1');
+    o.default = '180';
+    o.placeholder = '180';
+    o.datatype = 'uinteger';
+    o.rmempty = false;
+    o.ucisection = s.section;
+
+    o = s.taboption('basic', form.Value, 'urltest_tolerance', _('Tolerance'), _('Latency tolerance in milliseconds for server switching'));
+    o.depends('use_urltest', '1');
+    o.default = '50';
+    o.placeholder = '50';
+    o.datatype = 'uinteger';
+    o.rmempty = false;
+    o.ucisection = s.section;
+
+    // Subscription Status Display
+    o = s.taboption('basic', form.Button, '_subscription_status', _('Subscription Status'), _('View current subscription status and node information'));
+    o.depends('proxy_config_type', 'subscription');
+    o.inputtitle = _('View Status');
+    o.onclick = function(ev) {
+        const section_id = this.section.section;
+        
+        ui.showModal(_('Fetching Subscription Status'), [
+            E('p', {}, _('Loading subscription status...')),
+            E('div', { 'class': 'spinning' })
+        ]);
+        
+        return fs.exec('/usr/bin/podkop', ['subscription_status', section_id])
+        .then(function(res) {
+            ui.hideModal();
+            const statusText = res.stdout || 'No status information available';
+            ui.showModal(_('Subscription Status'), [
+                E('pre', { 'style': 'max-height: 400px; overflow-y: auto; white-space: pre-wrap;' }, statusText),
+                E('div', { 'class': 'right' }, [
+                    E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close'))
+                ])
+            ]);
+        })
+        .catch(function(err) {
+            ui.hideModal();
+            ui.addNotification(null, E('p', { 'class': 'alert-message warning' }, 
+                _('Failed to get status: %s').format(err.message)));
+        });
     };
 
     // Validation for proxy_string (single active vless:// or ss:// line)
@@ -114,8 +308,8 @@ function createConfigSection(section, map, network) {
                 return _('No active configuration found. At least one non-commented line is required.');
             }
 
-            if (!activeConfig.startsWith('vless://') && !activeConfig.startsWith('ss://')) {
-                return _('URL must start with vless:// or ss://');
+            if (!activeConfig.startsWith('vless://') && !activeConfig.startsWith('ss://') && !activeConfig.startsWith('vmess://') && !activeConfig.startsWith('trojan://') && !activeConfig.startsWith('hysteria://') && !activeConfig.startsWith('hysteria2://') && !activeConfig.startsWith('hy2://')) {
+                return _('URL must start with vless://, vmess://, ss://, trojan://, hysteria://, hysteria2://, or hy2://');
             }
 
             if (activeConfig.startsWith('ss://')) {
