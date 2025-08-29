@@ -42,6 +42,7 @@ function createConfigSection(section, map, network) {
     o.rows = 5;
     o.rmempty = false;
     o.ucisection = s.section;
+    const proxyStringOption = o;
     o.sectionDescriptions = new Map();
     o.placeholder = 'vless://uuid@server:port?type=tcp&security=tls#main\n// backup ss://method:pass@server:port\n// backup2 vless://uuid@server:port?type=grpc&security=reality#alt';
 
@@ -92,12 +93,14 @@ function createConfigSection(section, map, network) {
     o.rmempty = false;
     o.ucisection = s.section;
     o.placeholder = 'https://example.com/sub';
+    // Validation for subscription_url
     o.validate = function (section_id, value) {
         if (!value || value.length === 0) return _('Subscription URL cannot be empty');
         return validateUrl(value);
     };
 
-    o.validate = function (section_id, value) {
+    // Validation for proxy_string (single active vless:// or ss:// line)
+    proxyStringOption.validate = function (section_id, value) {
         if (!value || value.length === 0) {
             return true;
         }

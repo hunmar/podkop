@@ -654,6 +654,11 @@ list_update() {
     # Refresh proxy subscriptions (if configured)
     config_foreach refresh_subscription
 
+    # Apply changes if sing-box is running
+    if pgrep -f "sing-box" >/dev/null 2>&1; then
+        /etc/init.d/sing-box reload 2>/dev/null || /etc/init.d/sing-box restart 2>/dev/null
+    fi
+
     config_foreach import_community_subnet_lists
     config_foreach import_domains_from_remote_domain_lists
     config_foreach import_subnets_from_remote_subnet_lists
@@ -1065,10 +1070,13 @@ sing_box_outdound() {
         elif [ "$proxy_config_type" = "subscription" ]; then
             config_get subscription_url $section "subscription_url"
             if [ -z "$subscription_url" ]; then
-                log "[critical] Subscription URL is not set. Exit"
-                exit 1
+                log "[critical] Subscription URL is not set"
+                return 1
             fi
-            process_subscription_section "$section" "$subscription_url"
+            if ! process_subscription_section "$section" "$subscription_url"; then
+                log "[critical] Failed to process subscription for $section"
+                return 1
+            fi
         else
             config_get proxy_string $section "proxy_string"
 
@@ -1453,7 +1461,7 @@ sing_box_add_outbound_vless() {
             . + {"transport": {"type": "grpc"}}
            else . end) |
           (if $security == "tls" or $security == "reality" then
-             . + {"tls": {"enabled": true, "server_name": $sni, "utls": {"enabled": true, "fingerprint": $fp}, "insecure": ($insecure == "1")}} |
+             . + {"tls": {"enabled": true, "server_name": $sni, "utls": {"enabled": true, "fingerprint": $fp}, "insecure": ($insecure|test("^(1|true|yes)$"; "i"))}} |
              (if $security == "reality" then .tls += {"reality": {"enabled": true, "public_key": $pbk, "short_id": $sid}} else . end)
            else . end)
         else . end)
@@ -1491,12 +1499,12 @@ process_subscription_section() {
 
     if [ -z "$content" ]; then
         log "[critical] Empty subscription content"
-        exit 1
+        return 1
     fi
 
     local decoded
-    decoded=$(echo "$content" | tr -d '\n\r' | base64 -d 2>/dev/null)
-    if [ -z "$decoded" ]; then
+    decoded="$(echo "$content" | tr -d '\n\r' | base64 -d 2>/dev/null)"; rc=$?
+    if [ $rc -ne 0 ] || [ -z "$decoded" ]; then
         decoded="$content"
     fi
 
@@ -1505,7 +1513,7 @@ process_subscription_section() {
 
     if [ -z "$uris" ]; then
         log "[critical] No valid URIs found in subscription"
-        exit 1
+        return 1
     fi
 
     local idx=1
@@ -1568,7 +1576,7 @@ process_subscription_section() {
                     "server": $server,
                     "server_port": ($port | tonumber),
                     "password": $password,
-                    "tls": {"enabled": true, "server_name": $sni}
+                    "tls": ( if $sni == "" then {"enabled": true} else {"enabled": true, "server_name": $sni} end )
                 }]' "$SING_BOX_CONFIG" | build_sing_box_config
                 ;;
             *)
@@ -1584,8 +1592,9 @@ EOF
 
     if [ "$count" -le 0 ]; then
         log "[critical] No outbounds produced from subscription"
-        exit 1
+        return 1
     fi
+    return 0
 }
 
 refresh_subscription() {
