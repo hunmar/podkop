@@ -59,20 +59,34 @@ echolog() {
 }
 
 build_sing_box_config() {
-    # Validate JSON before writing
-    if ! jq . > /tmp/sing-box-config-tmp.json 2>/tmp/jq-error.log; then
-        local jq_error=$(cat /tmp/jq-error.log 2>/dev/null)
-        log "[critical] Invalid JSON generated: $jq_error"
+    # Capture stdin to a temp file first to prevent writing empty configs
+    local tmp_in="/tmp/sing-box-config-in.json"
+    local tmp_out="/tmp/sing-box-config-tmp.json"
+    cat > "$tmp_in"
+
+    # Ensure we actually received some JSON
+    if [ ! -s "$tmp_in" ]; then
+        log "[critical] No JSON received on stdin; refusing to overwrite $SING_BOX_CONFIG"
+        rm -f "$tmp_in" "$tmp_out"
         return 1
     fi
-    
+
+    # Validate JSON before writing
+    if ! jq . "$tmp_in" > "$tmp_out" 2>/tmp/jq-error.log; then
+        local jq_error=$(cat /tmp/jq-error.log 2>/dev/null)
+        log "[critical] Invalid JSON generated: $jq_error"
+        rm -f "$tmp_in" "$tmp_out"
+        return 1
+    fi
+
     # Create backup of current config if it exists and is valid
     if [ -f "$SING_BOX_CONFIG" ] && jq . "$SING_BOX_CONFIG" >/dev/null 2>&1; then
         cp "$SING_BOX_CONFIG" "${SING_BOX_CONFIG}.backup" 2>/dev/null
     fi
-    
-    mv /tmp/sing-box-config-tmp.json "$SING_BOX_CONFIG"
-    
+
+    mv "$tmp_out" "$SING_BOX_CONFIG"
+    rm -f "$tmp_in"
+
     # Ensure the configuration file has proper permissions
     chmod 644 "$SING_BOX_CONFIG" 2>/dev/null
 }

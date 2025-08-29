@@ -5,13 +5,16 @@ USE_PROCD=1
 
 script=$(readlink "$initscript")
 NAME="$(basename ${script:-$initscript})"
-config_load "$NAME"
 
 start_service() {
     echo "Start podkop"
 
-	config_get mon_restart_ifaces "main" "mon_restart_ifaces"
-	config_get restart_ifaces "main" "restart_ifaces"
+	# Load config safely if present
+	if [ -f "/etc/config/$NAME" ]; then
+		config_load "$NAME"
+		config_get mon_restart_ifaces "main" "mon_restart_ifaces"
+		config_get restart_ifaces "main" "restart_ifaces"
+	fi
 
 	procd_open_instance
 	procd_set_param command /usr/bin/podkop start
@@ -32,8 +35,14 @@ reload_service() {
 service_triggers() {
     echo "service_triggers start"
 
-	config_get mon_restart_ifaces "main" "mon_restart_ifaces"
-	config_get restart_ifaces "main" "restart_ifaces"
+	# Load config safely if present
+	mon_restart_ifaces=""
+	restart_ifaces=""
+	if [ -f "/etc/config/$NAME" ]; then
+		config_load "$NAME"
+		config_get mon_restart_ifaces "main" "mon_restart_ifaces"
+		config_get restart_ifaces "main" "restart_ifaces"
+	fi
 
 	# Test without delay
     #PROCD_RELOAD_DELAY=2000
