@@ -652,11 +652,29 @@ list_update() {
     echolog "📥 Downloading and processing lists..."
 
     # Refresh proxy subscriptions (if configured)
-    config_foreach refresh_subscription
+    local subscription_updated=0
+    local refresh_failed=0
 
-    # Apply changes if sing-box is running
-    if pgrep -f "sing-box" >/dev/null 2>&1; then
-        /etc/init.d/sing-box reload 2>/dev/null || /etc/init.d/sing-box restart 2>/dev/null
+    for section in $(uci show podkop | awk -F'[.=]' '/=main|=extra/ {print $2}' | sort -u); do
+        config_get mode "$section" "mode"
+        config_get proxy_config_type "$section" "proxy_config_type"
+        if [ "$mode" = "proxy" ] && [ "$proxy_config_type" = "subscription" ]; then
+            if refresh_subscription "$section"; then
+                subscription_updated=1
+                log "Successfully refreshed subscription for $section"
+            else
+                refresh_failed=1
+                log "Failed to refresh subscription for $section"
+            fi
+        fi
+    done
+
+    if [ "$subscription_updated" -eq 1 ] && [ "$refresh_failed" -eq 0 ]; then
+        if pgrep -f "sing-box" >/dev/null 2>&1; then
+            /etc/init.d/sing-box reload 2>/dev/null || /etc/init.d/sing-box restart 2>/dev/null
+        fi
+    elif [ "$refresh_failed" -eq 1 ]; then
+        echolog "❌ Some subscription refreshes failed - continuing with other updates"
     fi
 
     config_foreach import_community_subnet_lists
@@ -1070,7 +1088,7 @@ sing_box_outdound() {
         elif [ "$proxy_config_type" = "subscription" ]; then
             config_get subscription_url $section "subscription_url"
             if [ -z "$subscription_url" ]; then
-                log "[critical] Subscription URL is not set"
+                log "[critical] Subscription URL is not set for section $section"
                 return 1
             fi
             if ! process_subscription_section "$section" "$subscription_url"; then
@@ -1373,7 +1391,8 @@ sing_box_config_vless() {
                 "public_key": $pbk,
                 "short_id": $sid
               }
-            else . end
+            else . end |
+            (if $sni != "" then . else (.tls | del(.server_name)) end)
           else . end
         )
       else . end' "$SING_BOX_CONFIG" | build_sing_box_config
@@ -1462,7 +1481,8 @@ sing_box_add_outbound_vless() {
            else . end) |
           (if $security == "tls" or $security == "reality" then
              . + {"tls": {"enabled": true, "server_name": $sni, "utls": {"enabled": true, "fingerprint": $fp}, "insecure": ($insecure|test("^(1|true|yes)$"; "i"))}} |
-             (if $security == "reality" then .tls += {"reality": {"enabled": true, "public_key": $pbk, "short_id": $sid}} else . end)
+             (if $security == "reality" then .tls += {"reality": {"enabled": true, "public_key": $pbk, "short_id": $sid}} else . end) |
+             (if $sni != "" then . else (.tls | del(.server_name)) end)
            else . end)
         else . end)
     ' "$SING_BOX_CONFIG" | build_sing_box_config
