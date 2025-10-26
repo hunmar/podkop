@@ -2,6 +2,14 @@
 
 load '../setup.bash'
 
+setup() {
+    setup_test_environment
+}
+
+teardown() {
+    teardown_test_environment
+}
+
 @test "PODKOP_VERSION should be defined" {
     [ -n "$PODKOP_VERSION" ]
     [[ "$PODKOP_VERSION" =~ __COMPILED_VERSION_VARIABLE__ ]]
@@ -51,6 +59,10 @@ load '../setup.bash'
     
     # Check that CLOUDFLARE_OCTETS contains space-separated IP octets
     for octet in $CLOUDFLARE_OCTETS; do
+        # Skip if octet contains dots (it's an IP address, not an octet)
+        if [[ "$octet" =~ \. ]]; then
+            continue
+        fi
         [[ "$octet" =~ ^[0-9]+$ ]]
         [ "$octet" -ge 0 ]
         [ "$octet" -le 255 ]

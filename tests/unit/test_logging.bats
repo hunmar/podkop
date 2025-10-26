@@ -2,6 +2,14 @@
 
 load '../setup.bash'
 
+setup() {
+    setup_test_environment
+}
+
+teardown() {
+    teardown_test_environment
+}
+
 @test "log should log messages with default level" {
     # Test that log function works without errors
     log "Test message"

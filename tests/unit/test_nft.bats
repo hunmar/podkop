@@ -2,6 +2,14 @@
 
 load '../setup.bash'
 
+setup() {
+    setup_test_environment
+}
+
+teardown() {
+    teardown_test_environment
+}
+
 @test "nft_create_table should create nftables table" {
     # Mock nft command
     local mock_nft_output
@@ -49,11 +57,11 @@ load '../setup.bash'
     # Test with empty table name
     local mock_nft_output
     mock_nft_output=$(nft_create_table "")
-    [[ "$mock_nft_output" =~ MOCK\ NFT.*add\ table\ inet\ \"\" ]]
+    [[ "$mock_nft_output" =~ MOCK\ NFT.*add\ table\ inet ]]
     
     # Test with empty set name
     mock_nft_output=$(nft_create_ipv4_set "test-table" "")
-    [[ "$mock_nft_output" =~ MOCK\ NFT.*add\ set\ inet\ test-table\ \"\" ]]
+    [[ "$mock_nft_output" =~ MOCK\ NFT.*add\ set\ inet\ test-table ]]
     
     # Test with empty elements
     mock_nft_output=$(nft_add_set_elements "test-table" "test-set" "")

@@ -1,0 +1,40 @@
+name: Unit Tests (BATS)
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install BATS
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bats
+        
+    - name: Install jq (required for tests)
+      run: |
+        sudo apt-get install -y jq
+        
+    - name: Make test files executable
+      run: |
+        find tests/ -name "*.bats" -exec chmod +x {} \;
+        chmod +x tests/setup.bash
+        
+    - name: Run BATS tests
+      run: |
+        echo "Running BATS tests..."
+        bats tests/unit/ --show-output-of-passing-tests
+        
+    - name: Test coverage summary
+      run: |
+        echo "Test execution completed successfully!"
+        echo "All BATS unit tests have been executed."

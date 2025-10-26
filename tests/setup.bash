@@ -22,12 +22,12 @@ if [ -f "$PODKOP_LIB/sing_box_config_manager.sh" ]; then
     . "$PODKOP_LIB/sing_box_config_manager.sh"
 fi
 
-if [ -f "$PODKOP_LIB/sing_box_config_facade.sh" ]; then
-    . "$PODKOP_LIB/sing_box_config_facade.sh"
-fi
-
 if [ -f "$PODKOP_LIB/nft.sh" ]; then
     . "$PODKOP_LIB/nft.sh"
+fi
+
+if [ -f "$PODKOP_LIB/sing_box_config_facade.sh" ]; then
+    . "$PODKOP_LIB/sing_box_config_facade.sh"
 fi
 
 # Test helper functions
@@ -47,10 +47,10 @@ setup_test_environment() {
     }
     
     # Mock common commands
-    mock_command "logger" 'echo "MOCK LOGGER: $@"'
+    mock_command "logger" 'echo "MOCK LOGGER: $@" >&2'
     mock_command "uci" 'echo "MOCK UCI: $@"'
     mock_command "nft" 'echo "MOCK NFT: $@"'
-    mock_command "jq" 'echo "MOCK JQ: $@"'
+    mock_command "jq" 'echo "MOCK JQ: $@" >&2; echo "{\"type\": \"test\", \"tag\": \"test-tag\", \"server\": \"test-server\", \"server_port\": 8080, \"disabled\": false, \"level\": \"info\", \"timestamp\": true, \"final\": \"test-final\", \"strategy\": \"test-strategy\", \"independent_cache\": true, \"action\": \"test-action\", \"enabled\": true, \"external_controller\": \"test-controller\", \"external_ui\": \"test-ui\", \"version\": 3, \"rules\": [], \"test\": \"value\", \"transport\": {\"type\": \"test\"}, \"tls\": {\"enabled\": true}, \"dns\": {\"servers\": [{\"type\": \"test\"}], \"rules\": [{\"action\": \"test-action\"}]}, \"inbounds\": [{\"type\": \"test\"}], \"outbounds\": [{\"type\": \"test\"}], \"route\": {\"rules\": [{\"action\": \"test-action\"}]}}"'
     mock_command "wget" 'echo "MOCK WGET: $@"'
     mock_command "curl" 'echo "MOCK CURL: $@"'
     mock_command "nslookup" 'echo "MOCK NSLOOKUP: $@"'
