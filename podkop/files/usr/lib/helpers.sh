@@ -1,14 +1,14 @@
 # Check if string is valid IPv4
 is_ipv4() {
     local ip="$1"
-    local regex="^((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.?\b){4}$"
+    local regex="^([0-9]{1,3}\.){3}[0-9]{1,3}$"
     [[ "$ip" =~ $regex ]]
 }
 
 # Check if string is valid IPv4 with CIDR mask
 is_ipv4_cidr() {
     local ip="$1"
-    local regex="^((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.?\b){4}(\/(3[0-2]|2[0-9]|1[0-9]|[0-9]))$"
+    local regex="^([0-9]{1,3}\\.){3}[0-9]{1,3}\/([0-9]|[1-2][0-9]|3[0-2])$"
     [[ "$ip" =~ $regex ]]
 }
 
